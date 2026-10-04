@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: two-tier
+  labels:
+    app: backend
+spec:
+  # Tasks are in-memory, so keep a single replica.
+  # To scale out, move state to Redis/RDS (3-tier) and raise this.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: backend
+          image: BACKEND_IMAGE   # replaced by the GitHub Actions deploy workflow
+          ports:
+            - containerPort: 5000
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 5000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend          # nginx proxies to http://backend:5000
+  namespace: two-tier
+spec:
+  type: ClusterIP        # internal only; the frontend is the public entry point
+  selector:
+    app: backend
+  ports:
+    - port: 5000
+      targetPort: 5000
