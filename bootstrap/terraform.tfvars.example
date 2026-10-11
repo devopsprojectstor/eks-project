@@ -1,3 +1,2 @@
 github_owner = "renusingh123"
-infra_repo = "eks-project"
-# create_github_oidc_provider = false
+infra_repo   = "eks-project"
