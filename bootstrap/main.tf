@@ -114,7 +114,7 @@ resource "aws_iam_role" "infra_ci" {
   })
 }
 
-# Broad on purpose so the learning project works end to end.
+# Broad on purpose so the learning project works end to end.your
 # Tighten to only VPC/EKS/EC2/ECR/IAM/S3 actions once everything runs.
 resource "aws_iam_role_policy_attachment" "infra_ci_admin" {
   role       = aws_iam_role.infra_ci.name
