@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   destroy:
-    if: github.event.inputs.confirm == vars.EKS_CLUSTER
+    if: inputs.confirm == 'two-tier-eks'
     runs-on: ubuntu-latest
     environment: infra
     defaults:

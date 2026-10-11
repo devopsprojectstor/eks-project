@@ -104,8 +104,9 @@ resource "aws_iam_role" "infra_ci" {
         }
         StringLike = {
           "token.actions.githubusercontent.com:sub" = [
-            "repo:${var.github_owner}/${var.infra_repo}:pull_request",     # plan on PRs
-            "repo:${var.github_owner}/${var.infra_repo}:environment:infra" # apply/destroy
+             # newer format with immutable owner/repo IDs
+            "repo:${var.github_owner}@*/${var.infra_repo}@*:pull_request",
+            "repo:${var.github_owner}@*/${var.infra_repo}@*:environment:infra"
           ]
         }
       }
