@@ -1,0 +1,75 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths: ["eks/**", "platform/**", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+    paths: ["eks/**", "platform/**", ".github/workflows/terraform.yml"]
+  workflow_dispatch:   # "spin the cluster up" button
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: terraform-eks
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: eks
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "^1.10.0"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend-config=backend.hcl -input=false
+      - run: terraform validate
+      - name: Plan
+        run: |
+          terraform plan -input=false -no-color -lock=false | tee plan.txt
+          {
+            echo '### Terraform plan'
+            echo '```'
+            tail -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: infra   # add yourself as a required reviewer for a manual approval gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "^1.10.0"
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: terraform init -backend-config=backend.hcl -input=false
+      - run: terraform apply -input=false -auto-approve
+      - name: Create app namespace
+        run: |
+          aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name "${{ vars.EKS_CLUSTER }}"
+          kubectl apply -f ../platform/namespace.yaml
+      - name: Output settings for the app repo
+        run: |
+          echo '### Settings for the app repo (same values every rebuild)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          terraform output -json app_repo_settings >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

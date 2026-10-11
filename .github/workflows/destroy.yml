@@ -1,0 +1,60 @@
+name: Destroy (stop all charges)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type the cluster name (two-tier-eks) to confirm'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-eks
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    if: github.event.inputs.confirm == vars.EKS_CLUSTER
+    runs-on: ubuntu-latest
+    environment: infra
+    defaults:
+      run:
+        working-directory: eks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "^1.10.0"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Kubernetes created the app's load balancer, not Terraform.
+      # Delete it first or it blocks VPC deletion.
+      - name: Remove app namespace and its load balancer
+        run: |
+          if aws eks describe-cluster --name "${{ vars.EKS_CLUSTER }}" >/dev/null 2>&1; then
+            aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name "${{ vars.EKS_CLUSTER }}"
+            kubectl delete namespace two-tier --ignore-not-found --wait=true --timeout=300s
+            echo "Waiting for the AWS load balancer to be released..."
+            sleep 90
+          else
+            echo "Cluster not found, skipping."
+          fi
+
+      - run: terraform init -backend-config=backend.hcl -input=false
+      - run: terraform destroy -input=false -auto-approve
+
+      - name: Check for leftovers that still cost money
+        run: |
+          echo "Classic/ALB/NLB load balancers:"
+          aws elb describe-load-balancers --query 'LoadBalancerDescriptions[].LoadBalancerName' --output text
+          aws elbv2 describe-load-balancers --query 'LoadBalancers[].LoadBalancerName' --output text
+          echo "Unattached EBS volumes:"
+          aws ec2 describe-volumes --filters Name=status,Values=available --query 'Volumes[].VolumeId' --output text
+          echo "Unassociated Elastic IPs:"
+          aws ec2 describe-addresses --query 'Addresses[?AssociationId==null].PublicIp' --output text

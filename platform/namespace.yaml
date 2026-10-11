@@ -1,0 +1,5 @@
+# Owned by the infra repo: the app pipeline only has rights inside this namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: two-tier

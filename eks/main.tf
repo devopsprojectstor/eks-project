@@ -2,10 +2,25 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
-data "aws_caller_identity" "current" {}
+# Created once by bootstrap/
+data "aws_iam_openid_connect_provider" "github" {
+  url = "https://token.actions.githubusercontent.com"
+}
 
 locals {
   azs = slice(data.aws_availability_zones.available.names, 0, 2)
+
+  human_admins = {
+    for arn in var.admin_principal_arns : replace(arn, "/[^a-zA-Z0-9]/", "-") => {
+      principal_arn = arn
+      policy_associations = {
+        admin = {
+          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = { type = "cluster" }
+        }
+      }
+    }
+  }
 }
 
 # ---------------- Network ----------------
@@ -21,16 +36,11 @@ module "vpc" {
   public_subnets  = ["10.0.101.0/24", "10.0.102.0/24"]
 
   enable_nat_gateway   = true
-  single_nat_gateway   = true # cheaper; use one per AZ for production
+  single_nat_gateway   = true
   enable_dns_hostnames = true
 
-  # Lets Kubernetes find subnets for LoadBalancer Services
-  public_subnet_tags = {
-    "kubernetes.io/role/elb" = 1
-  }
-  private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = 1
-  }
+  public_subnet_tags  = { "kubernetes.io/role/elb" = 1 }
+  private_subnet_tags = { "kubernetes.io/role/internal-elb" = 1 }
 }
 
 # ---------------- EKS ----------------
@@ -41,11 +51,16 @@ module "eks" {
   cluster_name    = var.cluster_name
   cluster_version = var.cluster_version
 
-  cluster_endpoint_public_access           = true
-  enable_cluster_creator_admin_permissions = true # whoever runs terraform gets admin
+  cluster_endpoint_public_access = true
+
+  # The infra CI role runs apply, so it becomes cluster admin.
+  # That is what lets the destroy workflow delete the app's load balancer first.
+  enable_cluster_creator_admin_permissions = true
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
+
+  cluster_enabled_log_types = [] # skip CloudWatch log costs for a lab
 
   cluster_addons = {
     coredns                = {}
@@ -64,20 +79,21 @@ module "eks" {
     }
   }
 
-  # Let the GitHub Actions role run kubectl against the cluster
-  access_entries = {
-    github_actions = {
-      principal_arn = aws_iam_role.github_actions.arn
+  access_entries = merge(local.human_admins, {
+    app_deploy = {
+      principal_arn = aws_iam_role.app_deploy.arn
       policy_associations = {
-        admin = {
-          # Broad for simplicity. Tighten to AmazonEKSEditPolicy scoped to the
-          # two-tier namespace once the namespace exists.
-          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-          access_scope = { type = "cluster" }
+        # Namespaced edit rights only: the app pipeline can't touch other namespaces.
+        edit = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+          access_scope = {
+            type       = "namespace"
+            namespaces = ["two-tier"]
+          }
         }
       }
     }
-  }
+  })
 }
 
 # ---------------- ECR ----------------
@@ -86,7 +102,7 @@ resource "aws_ecr_repository" "app" {
 
   name                 = "${var.cluster_name}/${each.key}"
   image_tag_mutability = "IMMUTABLE"
-  force_delete         = true # lets terraform destroy remove repos that still hold images
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -111,49 +127,32 @@ resource "aws_ecr_lifecycle_policy" "app" {
   })
 }
 
-# ---------------- GitHub Actions OIDC (no long-lived AWS keys) ----------------
-resource "aws_iam_openid_connect_provider" "github" {
-  count = var.create_github_oidc_provider ? 1 : 0
-
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1", "1c58a3a8518e8759bf075b76b750d4f2df264fcd"]
-}
-
-data "aws_iam_openid_connect_provider" "github" {
-  count = var.create_github_oidc_provider ? 0 : 1
-  url   = "https://token.actions.githubusercontent.com"
-}
-
-locals {
-  github_oidc_arn = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : data.aws_iam_openid_connect_provider.github[0].arn
-}
-
-resource "aws_iam_role" "github_actions" {
-  name = "${var.cluster_name}-github-actions"
+# ---------------- Role for the APP repo's pipeline ----------------
+# Fixed name, so its ARN stays the same every time you destroy and recreate.
+resource "aws_iam_role" "app_deploy" {
+  name = "${var.cluster_name}-app-deploy"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = local.github_oidc_arn }
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          # Only pushes to main in your repo can assume this role
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_owner}/${var.app_repo}:ref:refs/heads/main"
         }
       }
     }]
   })
 }
 
-resource "aws_iam_role_policy" "github_actions" {
+resource "aws_iam_role_policy" "app_deploy" {
   name = "ecr-push-eks-describe"
-  role = aws_iam_role.github_actions.id
+  role = aws_iam_role.app_deploy.id
 
   policy = jsonencode({
     Version = "2012-10-17"
