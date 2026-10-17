@@ -82,7 +82,7 @@ jobs:
           kubectl wait -n argocd --for=condition=Available deployment --all --timeout=300s
 
       - name: Register the app with Argo CD
-        run: kubectl apply -f ../platform/argocd/application.yaml
+        run: kubectl apply -f ../platform/application.yaml
 
       - name: Output settings for the app repo
         run: |
