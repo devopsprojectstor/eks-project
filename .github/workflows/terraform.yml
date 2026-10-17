@@ -17,6 +17,9 @@ concurrency:
   group: terraform-eks
   cancel-in-progress: false
 
+env:
+  ARGOCD_VERSION: v3.4.9
+
 defaults:
   run:
     working-directory: eks
@@ -50,15 +53,9 @@ jobs:
   apply:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    environment: infra   # add yourself as a required reviewer for a manual approval gate
+    environment: infra
     steps:
       - uses: actions/checkout@v4
-      - name: Debug OIDC claims
-        run: |
-          TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
-          echo "$TOKEN" | cut -d. -f2 | python3 -c "import sys,base64,json; p=sys.stdin.read().strip(); p+='='*(-len(p)%4); d=json.loads(base64.urlsafe_b64decode(p)); print(d['sub']); print(d['aud'])"
-          echo "Role: ${{ secrets.AWS_ROLE_ARN }}" | sed 's/[0-9]\{12\}/<account>/'
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "^1.10.0"
@@ -69,10 +66,24 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
       - run: terraform init -backend-config=backend.hcl -input=false
       - run: terraform apply -input=false -auto-approve
+
+      - name: Connect kubectl
+        run: aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name "${{ vars.EKS_CLUSTER }}"
+
       - name: Create app namespace
+        run: kubectl apply -f ../platform/namespace.yaml
+
+      - name: Install Argo CD
         run: |
-          aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name "${{ vars.EKS_CLUSTER }}"
-          kubectl apply -f ../platform/namespace.yaml
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          # Server-side apply: the Argo CD CRDs are too big for client-side apply
+          kubectl apply -n argocd --server-side --force-conflicts \
+            -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml"
+          kubectl wait -n argocd --for=condition=Available deployment --all --timeout=300s
+
+      - name: Register the app with Argo CD
+        run: kubectl apply -f ../platform/argocd/application.yaml
+
       - name: Output settings for the app repo
         run: |
           echo '### Settings for the app repo (same values every rebuild)' >> "$GITHUB_STEP_SUMMARY"

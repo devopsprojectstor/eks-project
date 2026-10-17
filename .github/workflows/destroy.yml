@@ -33,12 +33,14 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      # Kubernetes created the app's load balancer, not Terraform.
-      # Delete it first or it blocks VPC deletion.
-      - name: Remove app namespace and its load balancer
+      # Kubernetes created the app's load balancer, not Terraform, so it must go first.
+      # Delete the Argo CD Application before the namespace: otherwise Argo CD's
+      # self-heal recreates the app (and its load balancer) while we tear down.
+      - name: Remove app and its load balancer
         run: |
           if aws eks describe-cluster --name "${{ vars.EKS_CLUSTER }}" >/dev/null 2>&1; then
             aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name "${{ vars.EKS_CLUSTER }}"
+            kubectl delete application two-tier -n argocd --ignore-not-found --wait=true --timeout=300s || true
             kubectl delete namespace two-tier --ignore-not-found --wait=true --timeout=300s
             echo "Waiting for the AWS load balancer to be released..."
             sleep 90

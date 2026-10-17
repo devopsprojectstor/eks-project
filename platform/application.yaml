@@ -1,0 +1,31 @@
+# Tells Argo CD what to deploy and where.
+# Applied by the infra Terraform workflow every time the cluster is (re)built.
+# If you move the repos to a GitHub org, change the owner in repoURL.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: two-tier
+  namespace: argocd
+  # Deleting this Application also deletes everything it deployed
+  # (including the frontend's AWS load balancer). The destroy workflow relies on this.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/renusingh123/eks-project-gitops.git
+    targetRevision: main
+    path: charts/two-tier          # Chart.yaml here, so Argo CD renders it with Helm
+    helm:
+      releaseName: two-tier
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: two-tier
+  syncPolicy:
+    automated:
+      prune: true      # delete resources that were removed from git
+      selfHeal: true   # undo manual kubectl changes
+    syncOptions:
+      - CreateNamespace=true

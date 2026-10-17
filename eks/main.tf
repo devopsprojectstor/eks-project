@@ -54,13 +54,13 @@ module "eks" {
   cluster_endpoint_public_access = true
 
   # The infra CI role runs apply, so it becomes cluster admin.
-  # That is what lets the destroy workflow delete the app's load balancer first.
+  # It installs Argo CD and lets the destroy workflow clean up first.
   enable_cluster_creator_admin_permissions = true
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
-  cluster_enabled_log_types = [] # skip CloudWatch log costs for a lab
+  cluster_enabled_log_types = []
 
   cluster_addons = {
     coredns                = {}
@@ -79,21 +79,9 @@ module "eks" {
     }
   }
 
-  access_entries = merge(local.human_admins, {
-    app_deploy = {
-      principal_arn = aws_iam_role.app_deploy.arn
-      policy_associations = {
-        # Namespaced edit rights only: the app pipeline can't touch other namespaces.
-        edit = {
-          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
-          access_scope = {
-            type       = "namespace"
-            namespaces = ["two-tier"]
-          }
-        }
-      }
-    }
-  })
+  # Only humans get kubectl access here. The app pipeline no longer needs any:
+  # Argo CD, running inside the cluster, does the deploying.
+  access_entries = local.human_admins
 }
 
 # ---------------- ECR ----------------
@@ -128,7 +116,7 @@ resource "aws_ecr_lifecycle_policy" "app" {
 }
 
 # ---------------- Role for the APP repo's pipeline ----------------
-# Fixed name, so its ARN stays the same every time you destroy and recreate.
+# With Argo CD, this role only pushes images. It has no access to the cluster.
 resource "aws_iam_role" "app_deploy" {
   name = "${var.cluster_name}-app-deploy"
 
@@ -154,7 +142,7 @@ resource "aws_iam_role" "app_deploy" {
 }
 
 resource "aws_iam_role_policy" "app_deploy" {
-  name = "ecr-push-eks-describe"
+  name = "ecr-push"
   role = aws_iam_role.app_deploy.id
 
   policy = jsonencode({
@@ -177,11 +165,6 @@ resource "aws_iam_role_policy" "app_deploy" {
           "ecr:DescribeImages"
         ]
         Resource = [for r in aws_ecr_repository.app : r.arn]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["eks:DescribeCluster"]
-        Resource = module.eks.cluster_arn
       }
     ]
   })
