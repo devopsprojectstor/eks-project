@@ -44,7 +44,8 @@ data "aws_caller_identity" "current" {}
 
 # ---------------- Remote state bucket ----------------
 resource "aws_s3_bucket" "tfstate" {
-  bucket = "${data.aws_caller_identity.current.account_id}-two-tier-tfstate"
+  bucket        = "${data.aws_caller_identity.current.account_id}-two-tier-tfstate"
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_versioning" "tfstate" {
@@ -104,7 +105,7 @@ resource "aws_iam_role" "infra_ci" {
         }
         StringLike = {
           "token.actions.githubusercontent.com:sub" = [
-             # newer format with immutable owner/repo IDs
+            # newer format with immutable owner/repo IDs
             "repo:${var.github_owner}@*/${var.infra_repo}@*:pull_request",
             "repo:${var.github_owner}@*/${var.infra_repo}@*:environment:infra"
           ]
